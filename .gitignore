@@ -1,6 +1,5 @@
 *.csv
 *.csv#
-*.xlsx
 *.pkl
 .idea/
 __pycache__/

@@ -1,7 +1,5 @@
-import argparse
 from scrape import Scraper, Crawler
 from proxy_manager import CyclicProxyManager
-from scrape import *  # erase this
 
 def test():
     with Crawler('MagnusCarlsen', 'Hikaru', max_players=2) as crawler:

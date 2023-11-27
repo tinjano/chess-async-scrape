@@ -86,7 +86,6 @@ def parse(response, caller):
 async def async_request(url, caller, callback):
     async with httpx.AsyncClient(proxies=next(proxies), timeout=10.0) as client:
 
-        # https://github.com/encode/httpx/discussions/2848
         try:
             response = await client.get(url, headers=user_agent())
         except Exception as e:

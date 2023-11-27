@@ -22,4 +22,4 @@ with Crawler(*usernames, max_players=5) as crawler:
 ```
 
 ## Known Bugs
-No bugs known so far.
+Sometimes the HTTPX library will throw exceptions related to SSL handshakes (see [here](https://github.com/encode/httpx/discussions/2848)). In such cases the request is skipped and an error message is logged.
