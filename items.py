@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import datetime, date
+from datetime import datetime
 
 @dataclass
 class Game:
@@ -14,7 +14,7 @@ class Game:
     nr_moves: int
     time_control: str
     game_url: str
-    date: date
+    date: datetime.date
 
     def __eq__(self, other):
         return self.game_url == other.game_url

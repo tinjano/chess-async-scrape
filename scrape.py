@@ -2,85 +2,21 @@ from proxy_manager import CyclicProxyManager, user_agent
 
 proxies = CyclicProxyManager().proxy_generator
 from items import Game
+from parse import parse
 from logging_settings import logger
 
+import os.path
+import traceback
 from queue import Queue
 from urllib.parse import urlparse, urljoin
-import datetime
+from datetime import datetime
 import re
 
 import requests
 import asyncio
 import httpx
 import pandas as pd
-from bs4 import BeautifulSoup
-
-
-def parse(response, caller):
-    soup = BeautifulSoup(response.text, 'html.parser')
-
-    if 'No results found.' in soup.text:
-        return None
-
-    table = soup.find('table', class_='table-component table-hover archive-games-table')
-    for tr in table.find_all('tr'):
-        # header row
-        if not tr.has_attr('v-board-popover'):
-            continue
-
-        game_url = tr.find('a', class_='archive-games-background-link').get('href')
-        # p = urlparse(game_url)
-        # game_url = f'{p.scheme}://{p.netloc}{p.path}'  # entire url
-        game_url = re.findall('\d+', game_url)[0]  # just the number
-
-        time_control = tr.find('span', class_='archive-games-game-time').text
-
-        user_td = tr.find_all(lambda tag: tag.name == 'a' and tag.has_attr('class')
-                                          and 'user-username-component' in tag.get('class'))
-        username_white, username_black = user_td[0].text, user_td[1].text
-
-        rating_td = tr.find_all('span', class_='user-tagline-rating')
-        rating_white, rating_black = rating_td[0].text.strip('()'), rating_td[1].text.strip('()')
-
-        res = tr.find('div', class_='archive-games-result-wrapper-score')
-        res = res.find_all('div')
-        result_white, result_black = res[0].text, res[1].text
-        if result_white == '½':
-            result_white = '0.5'
-        if result_black == '½':
-            result_black = '0.5'
-
-        acc = tr.find('td', class_='table-text-center archive-games-analyze-cell')
-        acc = acc.find_all('div')
-        try:
-            acc_white, acc_black = acc[0].text, acc[1].text
-            acc_white = float(acc_white)
-            acc_black = float(acc_black)
-        except IndexError:
-            acc_white, acc_black = None, None
-
-        moves_td = tr.find(lambda tag: tag.name == 'td' and tag.has_attr('class')
-                                       and tag.get('class') == ['table-text-center'])
-        nr_moves = moves_td.find('span').text
-
-        date_td = tr.find('td', class_='table-text-right archive-games-date-cell')
-        date = date_td.text.strip()
-        date = datetime.datetime.strptime(date, '%b %d, %Y').date()
-
-        caller.games_list.append(Game(
-            username_white.strip('\n\t '),
-            username_black.strip('\n\t '),
-            int(rating_white),
-            int(rating_black),
-            float(result_white),
-            float(result_black),
-            acc_white,
-            acc_black,
-            int(nr_moves),
-            time_control.strip('\n\t '),
-            game_url,
-            date
-        ))
+from selectolax.parser import HTMLParser
 
 
 async def async_request(url, caller, callback):
@@ -93,9 +29,7 @@ async def async_request(url, caller, callback):
                          f'The program will continue.')
             return
 
-        try:
-            assert response.status_code == 200
-        except AssertionError:
+        if response.status_code != 200:
             # raise Exception(f'Request to {url} returned status code {response.status_code}.')
             logger.error(f'Status code {response.status_code} from {url}. The program will continue')
             return
@@ -116,17 +50,16 @@ class Scraper:
         self.url = urljoin(self.base_url, path)
         self.games_list = []
 
-        # This is not 'truly' necessary
         response = requests.get(self.url, headers=user_agent())
-        soup = BeautifulSoup(response.text, 'html.parser')
+        tree = HTMLParser(response.text)
 
-        for a in soup.find_all('a', class_='v5-tabs-button'):
-            if 'Live' in a.text:
-                self.url = a.get('href')[:-6]
+        for a in tree.css('a.v5-tabs-button'):
+            if 'Live' in a.text(deep=False):
+                self.url = a.attributes['href'][:-6]
 
-        title = soup.find('span', class_='v5-title-has-icon')
+        title = tree.css_first('span.v5-title-has-icon')
         game_nr_pattern = r'Games \(([\d\,]+)\)'
-        self.nr_games = re.search(game_nr_pattern, title.text).group(1)
+        self.nr_games = re.search(game_nr_pattern, title.text(deep=False)).group(1)
         self.nr_games = int(self.nr_games.replace(',', ''))
 
     def do_it(self):
@@ -137,7 +70,7 @@ class Scraper:
         return self
 
     # only call after do_it
-    def write_csv(self, filename=f'output-{datetime.datetime.now()}.csv'):
+    def write_csv(self, filename=f'output-{datetime.now()}.csv'):
         df = pd.DataFrame(self.games_list).set_index('game_url')
         df.to_csv(filename, index=True)
 
@@ -153,15 +86,18 @@ class Crawler:
         self.max_players = max_players
 
     def do_it(self):
+        filename = f'output-{datetime.now()}.parquet'
         num_players = 0
 
-        while self.queue.qsize() and num_players < self.max_players:
+        while not self.queue.empty() and num_players <= self.max_players:
             player = self.queue.get()
-            if player not in self.players_set:
-                self.players_set.add(player)
-                num_players += 1
-            else:
+
+            temp_size = len(self.players_set)
+            self.players_set.add(player)
+            if len(self.players_set) == temp_size:
                 continue
+            else:
+                num_players += 1
 
             try:
                 new_list = Scraper(player).do_it().games_list
@@ -173,28 +109,39 @@ class Crawler:
                     else:
                         self.queue.put(element.username_black)
 
-                self.games_list += new_list
+                self.games_list.extend(new_list)
+                # logger.info(f'Game list length now at {len(self.games_list)}')
+
+                if len(self.games_list) > 100_000:
+                    self.write_parquet(filename)
+                    self.games_list = []
 
             except Exception as e:
-                logger.warning(f'Exception {e} happened when scraping player {player}.'
-                               f'The program will continue.')
+                logger.error(f'Exception {e} happened when scraping player {player}.'
+                             f'The program will continue.')
                 continue
 
         logger.info(f'The program has exhausted the list of players or allowed maximums. Beginning writing to file.')
-        self.write_pickle()
+        self.write_parquet(filename)
 
     # alias
     crawl = do_it
 
-    def write_pickle(self, filename=f'output-{datetime.datetime.now()}.pkl'):
+    def write_parquet(self, filename=f'output-{datetime.now()}.parquet'):
         df = pd.DataFrame(self.games_list).drop_duplicates(subset='game_url').set_index('game_url')
-        df.to_pickle(filename)
+        df.date = pd.to_datetime(df.date, errors='coerce')
+        df.to_parquet(filename, engine='fastparquet', append=os.path.exists(filename))
 
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if exc_type is not None:
-            logger.error(f'The crawler ran into '
-                         f'{exc_type}:{exc_val}. Writing partial output.')
-            self.write_pickle(f'partial-output-{datetime.datetime.now()}.pkl')
+            traceback_lines = traceback.format_tb(exc_tb)
+            logger.error('An exception occurred...', exc_info=True)
+
+            if all(['write_parquet' not in line for line in traceback_lines]):
+                logger.info('Writing partial output...')
+                self.write_parquet(f'partial-output-{datetime.now()}.parquet')
+            else:
+                logger.info('Could not save data.')

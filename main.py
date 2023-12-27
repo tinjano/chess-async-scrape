@@ -2,7 +2,7 @@ from scrape import Scraper, Crawler
 from proxy_manager import CyclicProxyManager
 
 def test():
-    with Crawler('MagnusCarlsen', 'Hikaru', max_players=2) as crawler:
+    with Crawler('MagnusCarlsen', max_players=2) as crawler:
         crawler.do_it()
 
     # Scraper('hikaru').do_it().write_csv()
